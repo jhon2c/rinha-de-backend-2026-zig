@@ -1,0 +1,49 @@
+
+x-api: &api
+  image: ghcr.io/jhon2c/rinha-de-backend-2026-zig:latest
+  platform: linux/amd64
+  volumes:
+    - socks:/run/sock
+  ulimits:
+    nofile: { soft: 65535, hard: 65535 }
+
+services:
+  api1:
+    <<: *api
+    command: ["/server", "/index.bin", "/run/sock/api1.sock", "12"]
+    cpuset: "0"
+    deploy:
+      resources:
+        limits: { cpus: "0.40", memory: "145MB" }
+
+  api2:
+    <<: *api
+    command: ["/server", "/index.bin", "/run/sock/api2.sock", "12"]
+    cpuset: "1"
+    deploy:
+      resources:
+        limits: { cpus: "0.40", memory: "145MB" }
+
+  lb:
+    image: ghcr.io/jhon2c/rinha-de-backend-2026-zig:latest
+    platform: linux/amd64
+    command: ["/lb", "9999", "/run/sock/api1.sock", "/run/sock/api2.sock"]
+    cpuset: "2,3"
+    ports:
+      - "9999:9999"
+    volumes:
+      - socks:/run/sock
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
+    depends_on: [api1, api2]
+    deploy:
+      resources:
+        limits: { cpus: "0.20", memory: "30MB" }
+
+volumes:
+  socks:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=4m"
