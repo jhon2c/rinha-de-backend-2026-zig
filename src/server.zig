@@ -11,6 +11,7 @@ const json = @import("json.zig");
 const fdpass = @import("fdpass.zig");
 
 const TCP_NODELAY = 1;
+const TCP_QUICKACK = 12;
 
 const SO_PREFER_BUSY_POLL = 69;
 
@@ -46,6 +47,7 @@ pub fn main(init: std.process.Init) !void {
     file.close(io);
     g_index = try index.Index.load(mapped);
     warmIndex();
+    _ = linux.mlockall(.{ .CURRENT = true, .FUTURE = true });
 
     ignoreSigpipe();
 
@@ -241,6 +243,7 @@ fn writeAllFd(fd: i32, data: []const u8) bool {
 fn setNonBlock(fd: i32) void {
     const one: u32 = 1;
     _ = linux.setsockopt(fd, linux.IPPROTO.TCP, TCP_NODELAY, @ptrCast(&one), 4);
+    _ = linux.setsockopt(fd, linux.IPPROTO.TCP, TCP_QUICKACK, @ptrCast(&one), 4);
 
     if (g_busy_us > 0) {
         _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.BUSY_POLL, @ptrCast(&g_busy_us), 4);
@@ -289,6 +292,7 @@ fn worker(lfd: i32) void {
         const cfd: i32 = @intCast(c);
         const one: u32 = 1;
         _ = linux.setsockopt(cfd, linux.IPPROTO.TCP, TCP_NODELAY, @ptrCast(&one), 4);
+        _ = linux.setsockopt(cfd, linux.IPPROTO.TCP, TCP_QUICKACK, @ptrCast(&one), 4);
         handleConn(cfd);
         _ = linux.close(cfd);
     }
