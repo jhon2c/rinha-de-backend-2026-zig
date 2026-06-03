@@ -3,6 +3,9 @@ const std = @import("std");
 const linux = std.os.linux;
 const fdpass = @import("fdpass.zig");
 
+const TCP_NODELAY = 1;
+const TCP_QUICKACK = 12;
+
 pub fn main(init: std.process.Init) !void {
     var it = std.process.Args.Iterator.init(init.minimal.args);
     _ = it.skip();
@@ -29,26 +32,48 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const lfd = try tcpListen(port);
-
     var rr: usize = 0;
     while (true) {
-        const c = linux.accept4(lfd, null, null, linux.SOCK.CLOEXEC);
+        const c = linux.accept4(lfd, null, null, linux.SOCK.NONBLOCK | linux.SOCK.CLOEXEC);
         if (linux.errno(c) != .SUCCESS) continue;
         const cfd: i32 = @intCast(c);
-        setNoDelay(cfd);
+        setFastSocket(cfd);
 
-        var sent = false;
-        for (0..nback) |off| {
-            const b = bfd[(rr + off) % nback];
-            if (fdpass.sendFd(b, cfd)) |_| {
-                sent = true;
-                break;
-            } else |_| {}
-        }
+        var buf: [fdpass.MAX_PREFIX]u8 = undefined;
+        const len = readReadyPrefix(cfd, &buf) orelse {
+            _ = linux.close(cfd);
+            continue;
+        };
+        _ = sendToBackend(bfd[0..nback], rr, cfd, buf[0..len]);
         rr = (rr + 1) % nback;
         _ = linux.close(cfd);
-        if (!sent) {}
     }
+}
+
+fn readReadyPrefix(fd: i32, buf: []u8) ?usize {
+    var len: usize = 0;
+    while (len < buf.len) {
+        const r = linux.read(fd, buf[len..].ptr, buf.len - len);
+        switch (linux.errno(r)) {
+            .SUCCESS => {
+                if (r == 0) return null;
+                len += r;
+                continue;
+            },
+            .AGAIN => break,
+            .INTR => continue,
+            else => return null,
+        }
+    }
+    return len;
+}
+
+fn sendToBackend(bfd: []const i32, preferred: usize, fd: i32, prefix: []const u8) bool {
+    for (0..bfd.len) |off| {
+        const b = bfd[(preferred + off) % bfd.len];
+        if (fdpass.sendFdWithBytes(b, fd, prefix)) |_| return true else |_| {}
+    }
+    return false;
 }
 
 fn tcpListen(port: u16) !i32 {
@@ -64,9 +89,10 @@ fn tcpListen(port: u16) !i32 {
     return fd;
 }
 
-fn setNoDelay(fd: i32) void {
+fn setFastSocket(fd: i32) void {
     const one: u32 = 1;
-    _ = linux.setsockopt(fd, linux.IPPROTO.TCP, 1, @ptrCast(&one), 4);
+    _ = linux.setsockopt(fd, linux.IPPROTO.TCP, TCP_NODELAY, @ptrCast(&one), 4);
+    _ = linux.setsockopt(fd, linux.IPPROTO.TCP, TCP_QUICKACK, @ptrCast(&one), 4);
 }
 
 fn ignoreSigpipe() void {

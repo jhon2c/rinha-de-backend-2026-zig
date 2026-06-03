@@ -158,8 +158,9 @@ fn acceptCtrl(ufd: i32) void {
 }
 
 fn drainCtrl(ctrl_fd: i32) void {
+    var prefix: [fdpass.MAX_PREFIX]u8 = undefined;
     while (true) {
-        switch (fdpass.recvFd(ctrl_fd)) {
+        switch (fdpass.recvFdWithBytes(ctrl_fd, &prefix)) {
             .again => return,
             .closed => {
                 epollDel(ctrl_fd);
@@ -167,12 +168,12 @@ fn drainCtrl(ctrl_fd: i32) void {
                 g_is_ctrl[@intCast(ctrl_fd)] = false;
                 return;
             },
-            .fd => |clientfd| openClient(clientfd),
+            .msg => |msg| openClient(msg.fd, prefix[0..msg.len]),
         }
     }
 }
 
-fn openClient(fd: i32) void {
+fn openClient(fd: i32, prefix: []const u8) void {
     if (fd < 0 or @as(usize, @intCast(fd)) >= MAX_FD or g_nfree == 0) {
         _ = linux.close(fd);
         return;
@@ -181,8 +182,14 @@ fn openClient(fd: i32) void {
     g_nfree -= 1;
     const slot = g_free[g_nfree];
     g_conns[slot] = .{ .fd = fd, .len = 0 };
+    if (prefix.len > 0) {
+        const n = @min(prefix.len, g_conns[slot].buf.len);
+        @memcpy(g_conns[slot].buf[0..n], prefix[0..n]);
+        g_conns[slot].len = n;
+    }
     g_fd_slot[@intCast(fd)] = slot;
     epollAdd(fd, linux.EPOLL.IN);
+    if (prefix.len > 0) handleClient(fd);
 }
 
 fn closeClient(fd: i32) void {
