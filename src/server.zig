@@ -56,6 +56,7 @@ pub fn main(init: std.process.Init) !void {
     g_index = try index.Index.load(mapped);
     warmIndex();
     _ = linux.mlockall(.{ .CURRENT = true, .FUTURE = true });
+    warmupQueries(io, 900);
 
     ignoreSigpipe();
 
@@ -263,6 +264,29 @@ fn setNonBlock(fd: i32) void {
     }
     const fl = linux.fcntl(fd, linux.F.GETFL, 0);
     _ = linux.fcntl(fd, linux.F.SETFL, @as(usize, @intCast(fl)) | linux.SOCK.NONBLOCK);
+}
+
+fn warmupQueries(io: std.Io, ms: i64) void {
+    const t0 = std.Io.Clock.now(.awake, io);
+    const limit_ns: i128 = @as(i128, ms) * 1_000_000;
+    var rng: u64 = 0x9E3779B97F4A7C15;
+    var n: usize = 0;
+    while (true) {
+        n += 1;
+        if (n & 255 == 0) {
+            const now = std.Io.Clock.now(.awake, io);
+            if (now.nanoseconds - t0.nanoseconds > limit_ns) break;
+        }
+        var qv: vec.Vec = undefined;
+        for (0..vec.LANES) |i| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            qv[i] = @intCast((rng >> 16) % 10001);
+        }
+        const top = knn.searchExact(&g_index, &qv, g_seed);
+        std.mem.doNotOptimizeAway(top.dist[0]);
+    }
 }
 
 fn warmIndex() void {
