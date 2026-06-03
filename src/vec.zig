@@ -140,6 +140,39 @@ pub inline fn sqdist(a: *const Vec, b: *const Vec) i64 {
     return sqsum16(va -% vb);
 }
 
+/// Early-exit on a pre-computed difference vector. Used by both sqdist_early and bboxLowerBound.
+pub inline fn sqdist_early_d(d: *const @Vector(LANES, i16), threshold: i64) ?i64 {
+    if (comptime builtin.cpu.arch == .x86_64 and builtin.mode != .Debug) {
+        const d_arr: [LANES]i16 = d.*;
+        const d_lo: @Vector(8, i16) = d_arr[0..8].*;
+        const prod_lo: @Vector(4, i32) = asm ("vpmaddwd %[in], %[in], %[out]"
+            : [out] "=x" (-> @Vector(4, i32)),
+            : [in] "x" (d_lo),
+        );
+        const sum_lo: i64 = @reduce(.Add, @as(@Vector(4, i64), prod_lo));
+        if (sum_lo >= threshold) return null;
+        const d_hi: @Vector(8, i16) = d_arr[8..LANES].*;
+        const prod_hi: @Vector(4, i32) = asm ("vpmaddwd %[in], %[in], %[out]"
+            : [out] "=x" (-> @Vector(4, i32)),
+            : [in] "x" (d_hi),
+        );
+        const sum_hi: i64 = @reduce(.Add, @as(@Vector(4, i64), prod_hi));
+        return sum_lo + sum_hi;
+    }
+    const w: @Vector(LANES, i32) = d.*;
+    const sq: @Vector(LANES, i32) = w * w;
+    return @reduce(.Add, @as(@Vector(LANES, i64), sq));
+}
+
+/// Returns null if first-half squared distance alone ≥ threshold (early exit).
+/// Otherwise returns the full squared distance.
+pub inline fn sqdist_early(a: *const Vec, b: *const Vec, threshold: i64) ?i64 {
+    const va: @Vector(LANES, i16) = a.*;
+    const vb: @Vector(LANES, i16) = b.*;
+    const d: @Vector(LANES, i16) = va -% vb;
+    return sqdist_early_d(&d, threshold);
+}
+
 pub const Top5 = struct {
     dist: [K]i64 = [_]i64{std.math.maxInt(i64)} ** K,
     idx: [K]u32 = [_]u32{std.math.maxInt(u32)} ** K,

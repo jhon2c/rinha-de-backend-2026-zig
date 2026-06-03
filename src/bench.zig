@@ -86,7 +86,7 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(sorted);
 
     std.debug.print("\nsearchExact (adaptive bbox branch-and-bound), seed sweep:\n{s:>7} {s:>6} {s:>6} {s:>6} {s:>10} {s:>9} {s:>9} {s:>9} {s:>9}\n", .{ "seed", "FP", "FN", "mism", "det_score", "mean_us", "p50_us", "p99_us", "max_us" });
-    for ([_]usize{ 4, 8, 12, 16, 24 }) |seed| {
+    for ([_]usize{ 2, 4, 8, 12, 16 }) |seed| {
         var fp: usize = 0;
         var fn_: usize = 0;
         var total_ns: u64 = 0;

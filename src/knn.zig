@@ -10,7 +10,7 @@ pub const Top5 = vec.Top5;
 pub const MAX_NPROBE: usize = 256;
 pub const MAX_K: usize = 16384;
 pub const MAX_SEED: usize = 64;
-pub const REPAIR_CAND_LIMIT: usize = 2048;
+pub const REPAIR_CAND_LIMIT: usize = 512;
 
 pub const CONFIDENT_DIST: i64 = 1400 * 1400;
 
@@ -23,7 +23,7 @@ pub fn searchExact(idx: *const Index, q: *const Vec, seed: usize) Top5 {
     var pc: [MAX_SEED]u32 = undefined;
     for (0..nseed) |i| pd[i] = std.math.maxInt(i64);
     for (idx.centroids, 0..) |*c, ci| {
-        const d = vec.sqdist(q, c);
+        const d = vec.sqdist_early(q, c, pd[nseed - 1]) orelse continue;
         if (d >= pd[nseed - 1]) continue;
         var j: usize = nseed - 1;
         while (j > 0 and pd[j - 1] > d) : (j -= 1) {
@@ -50,7 +50,7 @@ pub fn searchExact(idx: *const Index, q: *const Vec, seed: usize) Top5 {
     for (0..idx.k) |c| {
         if ((scanned[c >> 6] >> @intCast(c & 63)) & 1 != 0) continue;
         if (idx.cluster_off[c + 1] == idx.cluster_off[c]) continue;
-        const lb = bboxLowerBound(q, &idx.bbox_min[c], &idx.bbox_max[c]);
+        const lb = bboxLowerBound(q, &idx.bbox_min[c], &idx.bbox_max[c], top.worst()) orelse continue;
         if (lb >= top.worst()) continue;
         if (ncand < REPAIR_CAND_LIMIT) {
             cand[ncand] = .{ .lb = lb, .c = @intCast(c) };
@@ -69,7 +69,8 @@ fn candLess(_: void, a: Cand, b: Cand) bool {
     return a.lb < b.lb;
 }
 
-inline fn bboxLowerBound(q: *const Vec, mn: *const Vec, mx: *const Vec) i64 {
+/// Returns null if first-half bbox lb alone ≥ threshold (cluster can be skipped).
+inline fn bboxLowerBound(q: *const Vec, mn: *const Vec, mx: *const Vec, threshold: i64) ?i64 {
     const vq: @Vector(vec.LANES, i16) = q.*;
     const vmn: @Vector(vec.LANES, i16) = mn.*;
     const vmx: @Vector(vec.LANES, i16) = mx.*;
@@ -77,7 +78,7 @@ inline fn bboxLowerBound(q: *const Vec, mn: *const Vec, mx: *const Vec) i64 {
     const below = @max(vmn -% vq, zero);
     const above = @max(vq -% vmx, zero);
     const d: @Vector(vec.LANES, i16) = below +% above;
-    return vec.sqsum16(d);
+    return vec.sqdist_early_d(&d, threshold);
 }
 
 pub fn search(idx: *const Index, q: *const Vec, nprobe_in: usize) Top5 {
@@ -114,8 +115,8 @@ pub fn searchBrute(idx: *const Index, q: *const Vec) Top5 {
 inline fn scanRange(idx: *const Index, q: *const Vec, start: u32, end: u32, top: *Top5) void {
     var i: usize = start;
     while (i < end) : (i += 1) {
-        const d = vec.sqdist(q, &idx.vectors[i]);
         const worst = top.dist[vec.K - 1];
+        const d = vec.sqdist_early(&idx.vectors[i], q, worst) orelse continue;
         if (d < worst or (d == worst and idx.orig[i] < top.idx[vec.K - 1])) {
             top.consider(d, idx.orig[i], idx.labels[i]);
         }
