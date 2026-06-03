@@ -13,7 +13,6 @@ const fdpass = @import("fdpass.zig");
 const TCP_NODELAY = 1;
 const TCP_QUICKACK = 12;
 
-const SO_PREFER_BUSY_POLL = 69;
 const EPIOCSPARAMS: u32 = 0x400c8a01;
 const EpollParams = extern struct {
     busy_poll_usecs: u64,
@@ -203,16 +202,19 @@ fn handleClient(fd: i32) void {
     if (slot < 0) return;
     const conn = &g_conns[@intCast(slot)];
 
-    while (conn.len < conn.buf.len) {
-        const r = linux.read(fd, conn.buf[conn.len..].ptr, conn.buf.len - conn.len);
-        switch (linux.errno(r)) {
-            .SUCCESS => {
-                if (r == 0) return closeClient(fd);
-                conn.len += r;
-            },
-            .AGAIN => break,
-            .INTR => continue,
-            else => return closeClient(fd),
+    if (conn.len < conn.buf.len) {
+        read_once: while (true) {
+            const r = linux.read(fd, conn.buf[conn.len..].ptr, conn.buf.len - conn.len);
+            switch (linux.errno(r)) {
+                .SUCCESS => {
+                    if (r == 0) return closeClient(fd);
+                    conn.len += r;
+                    break :read_once;
+                },
+                .AGAIN => break :read_once,
+                .INTR => continue,
+                else => return closeClient(fd),
+            }
         }
     }
 
@@ -260,10 +262,6 @@ fn setNonBlock(fd: i32) void {
     _ = linux.setsockopt(fd, linux.IPPROTO.TCP, TCP_NODELAY, @ptrCast(&one), 4);
     _ = linux.setsockopt(fd, linux.IPPROTO.TCP, TCP_QUICKACK, @ptrCast(&one), 4);
 
-    if (g_busy_us > 0) {
-        _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.BUSY_POLL, @ptrCast(&g_busy_us), 4);
-        _ = linux.setsockopt(fd, linux.SOL.SOCKET, SO_PREFER_BUSY_POLL, @ptrCast(&one), 4);
-    }
     const fl = linux.fcntl(fd, linux.F.GETFL, 0);
     _ = linux.fcntl(fd, linux.F.SETFL, @as(usize, @intCast(fl)) | linux.SOCK.NONBLOCK);
 }
