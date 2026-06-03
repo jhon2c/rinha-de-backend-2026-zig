@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/server.zig"),
             .target = server_target,
             .optimize = optimize,
+            .strip = true,
         }),
     });
     b.installArtifact(server);
@@ -27,6 +28,8 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lb.zig"),
             .target = server_target,
             .optimize = optimize,
+            .single_threaded = true,
+            .strip = true,
         }),
     });
     b.installArtifact(lb);
