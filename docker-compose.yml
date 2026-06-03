@@ -5,6 +5,7 @@ x-api: &api
     - socks:/run/sock
   ulimits:
     nofile: { soft: 65535, hard: 65535 }
+    memlock: { soft: -1, hard: -1 }
 
 services:
   api1:
@@ -13,7 +14,7 @@ services:
     cpuset: "0"
     deploy:
       resources:
-        limits: { cpus: "0.40", memory: "145MB" }
+        limits: { cpus: "0.45", memory: "145MB" }
 
   api2:
     <<: *api
@@ -21,7 +22,7 @@ services:
     cpuset: "1"
     deploy:
       resources:
-        limits: { cpus: "0.40", memory: "145MB" }
+        limits: { cpus: "0.45", memory: "145MB" }
 
   lb:
     build: .
@@ -36,7 +37,7 @@ services:
     depends_on: [api1, api2]
     deploy:
       resources:
-        limits: { cpus: "0.20", memory: "30MB" }
+        limits: { cpus: "0.10", memory: "30MB" }
 
 volumes:
   socks:
