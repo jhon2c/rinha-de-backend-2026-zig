@@ -80,21 +80,36 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("{d:>7} {d:>6} {d:>6} {d:>6} {d:>6} {d:>10.1}\n", .{ np, tp, tn, fp, fn_, det });
     }
 
-    std.debug.print("\nsearchExact (adaptive bbox branch-and-bound), seed sweep:\n{s:>7} {s:>6} {s:>6} {s:>6} {s:>10}\n", .{ "seed", "FP", "FN", "mism", "det_score" });
+    const lat = try gpa.alloc(u64, N);
+    defer gpa.free(lat);
+    const sorted = try gpa.alloc(u64, N);
+    defer gpa.free(sorted);
+
+    std.debug.print("\nsearchExact (adaptive bbox branch-and-bound), seed sweep:\n{s:>7} {s:>6} {s:>6} {s:>6} {s:>10} {s:>9} {s:>9} {s:>9} {s:>9}\n", .{ "seed", "FP", "FN", "mism", "det_score", "mean_us", "p50_us", "p99_us", "max_us" });
     for ([_]usize{ 4, 8, 12, 16, 24 }) |seed| {
         var fp: usize = 0;
         var fn_: usize = 0;
-        var mism: usize = 0;
-        for (entries.items) |*e| {
+        var total_ns: u64 = 0;
+        for (entries.items, 0..) |*e, i| {
+            const t0 = std.Io.Clock.now(.awake, io);
             const top = knn.searchExact(&idx, &e.q, seed);
+            const t1 = std.Io.Clock.now(.awake, io);
+            const ns: u64 = @intCast(t1.nanoseconds - t0.nanoseconds);
+            std.mem.doNotOptimizeAway(top.dist[0]);
+            lat[i] = ns;
+            total_ns += ns;
             const approved = knn.decide(&top).approved;
             if (approved != e.expected_approved) {
                 if (approved) fn_ += 1 else fp += 1;
             }
-
-            _ = &mism;
         }
-        std.debug.print("{d:>7} {d:>6} {d:>6} {d:>6} {d:>10.1}\n", .{ seed, fp, fn_, fp + fn_, detectionScore(fp, fn_, 0, N) });
+        @memcpy(sorted, lat);
+        std.mem.sort(u64, sorted, {}, std.sort.asc(u64));
+        const mean_us = @as(f64, @floatFromInt(total_ns)) / @as(f64, @floatFromInt(N)) / 1000.0;
+        const p50_us = @as(f64, @floatFromInt(sorted[N / 2])) / 1000.0;
+        const p99_us = @as(f64, @floatFromInt(sorted[(N * 99) / 100])) / 1000.0;
+        const max_us = @as(f64, @floatFromInt(sorted[N - 1])) / 1000.0;
+        std.debug.print("{d:>7} {d:>6} {d:>6} {d:>6} {d:>10.1} {d:>9.2} {d:>9.2} {d:>9.2} {d:>9.2}\n", .{ seed, fp, fn_, fp + fn_, detectionScore(fp, fn_, 0, N), mean_us, p50_us, p99_us, max_us });
     }
 }
 
