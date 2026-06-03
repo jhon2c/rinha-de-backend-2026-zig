@@ -14,10 +14,18 @@ const TCP_NODELAY = 1;
 const TCP_QUICKACK = 12;
 
 const SO_PREFER_BUSY_POLL = 69;
+const EPIOCSPARAMS: u32 = 0x400c8a01;
+const EpollParams = extern struct {
+    busy_poll_usecs: u64,
+    busy_poll_budget: u16,
+    prefer_busy_poll: u8,
+    pad: u8 = 0,
+};
 
 var g_index: index.Index = undefined;
 var g_seed: usize = 12;
 var g_busy_us: u32 = 50;
+var g_epoll_timeout_ms: i32 = 1;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -100,11 +108,15 @@ fn runEpoll(gpa: std.mem.Allocator, ctrl_path: [:0]const u8) !void {
     const ep_u = linux.epoll_create1(linux.EPOLL.CLOEXEC);
     if (linux.errno(ep_u) != .SUCCESS) return error.Epoll;
     g_ep = @intCast(ep_u);
+    if (g_busy_us > 0) {
+        var epp = EpollParams{ .busy_poll_usecs = g_busy_us, .busy_poll_budget = 8, .prefer_busy_poll = 1 };
+        _ = linux.ioctl(g_ep, EPIOCSPARAMS, @intFromPtr(&epp));
+    }
     epollAdd(ufd, linux.EPOLL.IN);
 
     var events: [256]linux.epoll_event = undefined;
     while (true) {
-        const n_u = linux.epoll_wait(g_ep, &events, events.len, -1);
+        const n_u = linux.epoll_wait(g_ep, &events, events.len, g_epoll_timeout_ms);
         if (linux.errno(n_u) != .SUCCESS) continue;
         const n: usize = @intCast(n_u);
         for (events[0..n]) |ev| {
