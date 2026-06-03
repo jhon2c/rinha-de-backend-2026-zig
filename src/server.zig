@@ -25,7 +25,7 @@ const EpollParams = extern struct {
 var g_index: index.Index = undefined;
 var g_seed: usize = 12;
 var g_busy_us: u32 = 50;
-var g_epoll_timeout_ms: i32 = 1;
+var g_epoll_timeout_us: i64 = 1000;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -39,6 +39,7 @@ pub fn main(init: std.process.Init) !void {
     var workers: usize = 96;
     if (it.next()) |s| workers = try std.fmt.parseInt(usize, s, 10);
     if (it.next()) |s| g_busy_us = try std.fmt.parseInt(u32, s, 10);
+    if (it.next()) |s| g_epoll_timeout_us = try std.fmt.parseInt(i64, s, 10);
 
     var file = try std.Io.Dir.cwd().openFile(io, idx_path, .{});
     const st = try file.stat(io);
@@ -116,8 +117,9 @@ fn runEpoll(gpa: std.mem.Allocator, ctrl_path: [:0]const u8) !void {
     epollAdd(ufd, linux.EPOLL.IN);
 
     var events: [256]linux.epoll_event = undefined;
+    const ts = linux.timespec{ .sec = @divTrunc(g_epoll_timeout_us, 1_000_000), .nsec = @mod(g_epoll_timeout_us, 1_000_000) * 1000 };
     while (true) {
-        const n_u = linux.epoll_wait(g_ep, &events, events.len, g_epoll_timeout_ms);
+        const n_u = linux.syscall6(.epoll_pwait2, @as(usize, @bitCast(@as(isize, g_ep))), @intFromPtr(&events), events.len, @intFromPtr(&ts), 0, 8);
         if (linux.errno(n_u) != .SUCCESS) continue;
         const n: usize = @intCast(n_u);
         for (events[0..n]) |ev| {
