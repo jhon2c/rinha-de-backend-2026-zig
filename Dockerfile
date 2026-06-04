@@ -15,7 +15,7 @@ COPY resources ./resources
 
 RUN zig build preprocessor -Doptimize=ReleaseFast && \
     gunzip -c resources/references.json.gz > /tmp/references.json && \
-    ./zig-out/bin/preprocessor /tmp/references.json /app/index.bin 4096 200000 15 && \
+    ./zig-out/bin/preprocessor /tmp/references.json /app/index.bin 2560 200000 15 && \
     rm /tmp/references.json
 
 RUN case "$TARGETARCH" in \
