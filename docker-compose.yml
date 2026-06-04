@@ -10,7 +10,7 @@ x-api: &api
 services:
   api1:
     <<: *api
-    command: ["/server", "/index.bin", "/run/sock/api1.sock", "4", "96", "50", "200"]
+    command: ["/server", "/index.bin", "/run/sock/api1.sock", "2", "96", "50", "200"]
     cpuset: "0"
     deploy:
       resources:

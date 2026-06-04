@@ -122,7 +122,7 @@ fn daysFromCivil(y_in: i64, m: i64, d: i64) i64 {
 }
 
 pub inline fn sqsum16(d: @Vector(LANES, i16)) i64 {
-    if (comptime builtin.cpu.arch == .x86_64 and builtin.mode != .Debug) {
+    if (comptime use_asm) {
         const prod: @Vector(8, i32) = asm ("vpmaddwd %[in], %[in], %[out]"
             : [out] "=x" (-> @Vector(8, i32)),
             : [in] "x" (d),
@@ -140,37 +140,97 @@ pub inline fn sqdist(a: *const Vec, b: *const Vec) i64 {
     return sqsum16(va -% vb);
 }
 
-/// Early-exit on a pre-computed difference vector. Used by both sqdist_early and bboxLowerBound.
-pub inline fn sqdist_early_d(d: *const @Vector(LANES, i16), threshold: i64) ?i64 {
-    if (comptime builtin.cpu.arch == .x86_64 and builtin.mode != .Debug) {
-        const d_arr: [LANES]i16 = d.*;
-        const d_lo: @Vector(8, i16) = d_arr[0..8].*;
-        const prod_lo: @Vector(4, i32) = asm ("vpmaddwd %[in], %[in], %[out]"
-            : [out] "=x" (-> @Vector(4, i32)),
-            : [in] "x" (d_lo),
-        );
-        const sum_lo: i64 = @reduce(.Add, @as(@Vector(4, i64), prod_lo));
-        if (sum_lo >= threshold) return null;
-        const d_hi: @Vector(8, i16) = d_arr[8..LANES].*;
-        const prod_hi: @Vector(4, i32) = asm ("vpmaddwd %[in], %[in], %[out]"
-            : [out] "=x" (-> @Vector(4, i32)),
-            : [in] "x" (d_hi),
-        );
-        const sum_hi: i64 = @reduce(.Add, @as(@Vector(4, i64), prod_hi));
-        return sum_lo + sum_hi;
-    }
-    const w: @Vector(LANES, i32) = d.*;
-    const sq: @Vector(LANES, i32) = w * w;
-    return @reduce(.Add, @as(@Vector(LANES, i64), sq));
+pub const BLOCK: usize = 8;
+pub const PAIRS: usize = 7;
+pub const I32x8 = @Vector(BLOCK, i32);
+pub const I16x16 = @Vector(2 * BLOCK, i16);
+
+pub const Block = extern struct {
+    pair: [PAIRS]I32x8,
+};
+
+comptime {
+    std.debug.assert(@sizeOf(Block) == PAIRS * @sizeOf(I32x8));
 }
 
-/// Returns null if first-half squared distance alone ≥ threshold (early exit).
-/// Otherwise returns the full squared distance.
-pub inline fn sqdist_early(a: *const Vec, b: *const Vec, threshold: i64) ?i64 {
-    const va: @Vector(LANES, i16) = a.*;
-    const vb: @Vector(LANES, i16) = b.*;
-    const d: @Vector(LANES, i16) = va -% vb;
-    return sqdist_early_d(&d, threshold);
+const has_avx2 = builtin.cpu.arch == .x86_64 and
+    std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
+const use_asm = has_avx2 and builtin.mode != .Debug;
+
+pub inline fn packQueryPairs(query: *const Vec) [PAIRS]I32x8 {
+    var qp: [PAIRS]I32x8 = undefined;
+    inline for (0..PAIRS) |p| {
+        const lo: u32 = @as(u16, @bitCast(query[2 * p]));
+        const hi: u32 = @as(u16, @bitCast(query[2 * p + 1]));
+        const word: i32 = @bitCast(lo | (hi << 16));
+        qp[p] = @splat(word);
+    }
+    return qp;
+}
+
+pub inline fn dist8(block: *const Block, qp: *const [PAIRS]I32x8) I32x8 {
+    if (comptime use_asm) {
+        var acc: I32x8 = @splat(0);
+        inline for (0..PAIRS) |p| {
+            const diff: I16x16 = @as(I16x16, @bitCast(block.pair[p])) -% @as(I16x16, @bitCast(qp[p]));
+            const prod: I32x8 = asm ("vpmaddwd %[in], %[in], %[out]"
+                : [out] "=x" (-> I32x8),
+                : [in] "x" (diff),
+            );
+            acc +%= prod;
+        }
+        return acc;
+    }
+    return dist8Scalar(block, qp);
+}
+
+fn dist8Scalar(block: *const Block, qp: *const [PAIRS]I32x8) I32x8 {
+    var out: [BLOCK]i32 = [_]i32{0} ** BLOCK;
+    inline for (0..PAIRS) |p| {
+        const vb: I16x16 = @bitCast(block.pair[p]);
+        const qb: I16x16 = @bitCast(qp[p]);
+        const d: [2 * BLOCK]i16 = vb -% qb;
+        for (0..BLOCK) |j| {
+            const dlo: i32 = d[2 * j];
+            const dhi: i32 = d[2 * j + 1];
+            out[j] +%= dlo *% dlo +% dhi *% dhi;
+        }
+    }
+    return out;
+}
+
+pub inline fn unpackLane(block: *const Block, j: usize) Vec {
+    var v: Vec = [_]i16{0} ** LANES;
+    inline for (0..PAIRS) |p| {
+        const lanes: [BLOCK]i32 = block.pair[p];
+        const word: u32 = @bitCast(lanes[j]);
+        v[2 * p] = @bitCast(@as(u16, @truncate(word)));
+        v[2 * p + 1] = @bitCast(@as(u16, @truncate(word >> 16)));
+    }
+    return v;
+}
+
+pub fn packBlock(vecs: *const [BLOCK]Vec) Block {
+    var b: Block = undefined;
+    inline for (0..PAIRS) |p| {
+        var lane: [BLOCK]i32 = undefined;
+        for (0..BLOCK) |j| {
+            const lo: u32 = @as(u16, @bitCast(vecs[j][2 * p]));
+            const hi: u32 = @as(u16, @bitCast(vecs[j][2 * p + 1]));
+            lane[j] = @bitCast(lo | (hi << 16));
+        }
+        b.pair[p] = lane;
+    }
+    return b;
+}
+
+pub inline fn candMask(d: I32x8, worst: i64) u8 {
+    const w: i32 = if (worst > std.math.maxInt(i32)) std.math.maxInt(i32) else @intCast(worst);
+    const wv: I32x8 = @splat(w);
+    const zero: I32x8 = @splat(0);
+    const le: @Vector(BLOCK, bool) = d <= wv;
+    const ov: @Vector(BLOCK, bool) = d < zero;
+    return @as(u8, @bitCast(le)) | @as(u8, @bitCast(ov));
 }
 
 pub const Top5 = struct {
@@ -227,6 +287,34 @@ test "sqdist + Top5 tie-break by lower index" {
     try std.testing.expectEqual(@as(u32, 3), top.idx[1]);
     try std.testing.expectEqual(@as(u32, 7), top.idx[2]);
     try std.testing.expectEqual(@as(u8, 2), top.fraudCount());
+}
+
+test "pack/unpack round-trips and dist8 matches sqdist (mod 2^32)" {
+    var prng = std.Random.DefaultPrng.init(0xC0FFEE);
+    const rng = prng.random();
+    var vecs: [BLOCK]Vec = undefined;
+    for (0..BLOCK) |j| {
+        for (0..LANES) |d| {
+            vecs[j][d] = if (d < DIM) @intCast(rng.intRangeAtMost(i32, -10000, 10000)) else 0;
+        }
+    }
+    const blk = packBlock(&vecs);
+    for (0..BLOCK) |j| {
+        try std.testing.expectEqual(vecs[j], unpackLane(&blk, j));
+    }
+
+    var qv: Vec = [_]i16{0} ** LANES;
+    for (0..DIM) |d| qv[d] = @intCast(rng.intRangeAtMost(i32, -10000, 10000));
+    const qp = packQueryPairs(&qv);
+    const d8: [BLOCK]i32 = dist8(&blk, &qp);
+    for (0..BLOCK) |j| {
+        const exact = sqdist(&qv, &vecs[j]);
+        try std.testing.expectEqual(@as(i32, @truncate(exact)), d8[j]);
+    }
+
+    const worst = sqdist(&qv, &vecs[0]);
+    const mask = candMask(d8, worst);
+    try std.testing.expect((mask & 1) != 0);
 }
 
 test "dayOfWeek matches generator" {

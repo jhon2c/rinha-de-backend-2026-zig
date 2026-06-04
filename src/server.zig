@@ -92,7 +92,6 @@ const Conn = struct { buf: [CONN_BUF]u8 = undefined, len: usize = 0, fd: i32 = -
 var g_conns: []Conn = undefined;
 var g_fd_slot: [MAX_FD]i32 = undefined;
 var g_is_ctrl: [MAX_FD]bool = undefined;
-var g_in_epoll: [MAX_FD]bool = undefined;
 var g_free: [CONN_CAP]u16 = undefined;
 var g_nfree: usize = 0;
 var g_ep: i32 = -1;
@@ -102,7 +101,6 @@ fn runEpoll(gpa: std.mem.Allocator, ctrl_path: [:0]const u8) !void {
     for (0..MAX_FD) |i| {
         g_fd_slot[i] = -1;
         g_is_ctrl[i] = false;
-        g_in_epoll[i] = false;
     }
     for (0..CONN_CAP) |i| g_free[CONN_CAP - 1 - i] = @intCast(i);
     g_nfree = CONN_CAP;
@@ -139,20 +137,10 @@ fn runEpoll(gpa: std.mem.Allocator, ctrl_path: [:0]const u8) !void {
 fn epollAdd(fd: i32, mask: u32) void {
     var ev = linux.epoll_event{ .events = mask, .data = .{ .fd = fd } };
     _ = linux.epoll_ctl(g_ep, linux.EPOLL.CTL_ADD, fd, &ev);
-    g_in_epoll[@intCast(fd)] = true;
 }
 
 fn epollDel(fd: i32) void {
-    if (!g_in_epoll[@intCast(fd)]) return;
     _ = linux.epoll_ctl(g_ep, linux.EPOLL.CTL_DEL, fd, null);
-    g_in_epoll[@intCast(fd)] = false;
-}
-
-fn epollAddIfNeeded(fd: i32) void {
-    if (g_in_epoll[@intCast(fd)]) return;
-    var ev = linux.epoll_event{ .events = linux.EPOLL.IN, .data = .{ .fd = fd } };
-    _ = linux.epoll_ctl(g_ep, linux.EPOLL.CTL_ADD, fd, &ev);
-    g_in_epoll[@intCast(fd)] = true;
 }
 
 fn acceptCtrl(ufd: i32) void {
@@ -199,15 +187,9 @@ fn openClient(fd: i32, prefix: []const u8) void {
         @memcpy(g_conns[slot].buf[0..n], prefix[0..n]);
         g_conns[slot].len = n;
     }
-    g_fd_slot[@intCast(fd)] = @intCast(slot);
-    // Don't add to epoll yet: handleClient adds it lazily on EAGAIN.
-    // If prefix is non-empty we try to process inline; if the request is
-    // complete in the prefix the common case never needs epoll at all.
-    if (prefix.len > 0) {
-        handleClient(fd);
-    } else {
-        epollAddIfNeeded(fd);
-    }
+    g_fd_slot[@intCast(fd)] = slot;
+    epollAdd(fd, linux.EPOLL.IN);
+    if (prefix.len > 0) handleClient(fd);
 }
 
 fn closeClient(fd: i32) void {
@@ -227,53 +209,45 @@ fn handleClient(fd: i32) void {
     if (slot < 0) return;
     const conn = &g_conns[@intCast(slot)];
 
+    if (conn.len < conn.buf.len) {
+        read_once: while (true) {
+            const r = linux.read(fd, conn.buf[conn.len..].ptr, conn.buf.len - conn.len);
+            switch (linux.errno(r)) {
+                .SUCCESS => {
+                    if (r == 0) return closeClient(fd);
+                    conn.len += r;
+                    break :read_once;
+                },
+                .AGAIN => break :read_once,
+                .INTR => continue,
+                else => return closeClient(fd),
+            }
+        }
+    }
+
     var off: usize = 0;
     while (true) {
-        // Read until we have a complete header.
-        while (headerEnd(conn.buf[off..conn.len]) == null) {
-            if (conn.len == conn.buf.len) return closeClient(fd);
-            const r = linux.read(fd, conn.buf[conn.len..].ptr, conn.buf.len - conn.len);
-            switch (linux.errno(r)) {
-                .SUCCESS => {
-                    if (r == 0) return closeClient(fd);
-                    conn.len += r;
-                },
-                .AGAIN => { epollAddIfNeeded(fd); return; },
-                .INTR => {},
-                else => return closeClient(fd),
-            }
-        }
-        const he = headerEnd(conn.buf[off..conn.len]).?;
-        const req = parseHead(conn.buf[off .. off + he]);
+        const view = conn.buf[off..conn.len];
+        const he = headerEnd(view) orelse break;
+        const req = parseHead(view[0..he]);
         var body_len: usize = 0;
-        if (req.is_post) body_len = contentLength(conn.buf[off .. off + he]) orelse 0;
+        if (req.is_post) body_len = contentLength(view[0..he]) orelse 0;
         const total = he + body_len;
-        // Read until body is complete.
-        while (conn.len - off < total) {
-            if (conn.len == conn.buf.len) return closeClient(fd);
-            const r = linux.read(fd, conn.buf[conn.len..].ptr, conn.buf.len - conn.len);
-            switch (linux.errno(r)) {
-                .SUCCESS => {
-                    if (r == 0) return closeClient(fd);
-                    conn.len += r;
-                },
-                .AGAIN => { epollAddIfNeeded(fd); return; },
-                .INTR => {},
-                else => return closeClient(fd),
-            }
-        }
+        if (view.len < total) break;
 
-        const resp = route(req, conn.buf[off + he .. off + total]);
+        const resp = route(req, view[he..total]);
         if (!writeAllFd(fd, resp)) return closeClient(fd);
         off += total;
         if (!req.keep_alive) return closeClient(fd);
+    }
 
-        // Compact buffer for the next keep-alive request.
+    if (off > 0) {
         const rem = conn.len - off;
         if (rem > 0) std.mem.copyForwards(u8, conn.buf[0..rem], conn.buf[off..conn.len]);
         conn.len = rem;
-        off = 0;
-        if (rem == 0) { epollAddIfNeeded(fd); return; }
+    } else if (conn.len == conn.buf.len) {
+
+        return closeClient(fd);
     }
 }
 
@@ -325,10 +299,11 @@ fn warmupQueries(io: std.Io, ms: i64) void {
 fn warmIndex() void {
     var sum: usize = 0;
     touch(std.mem.sliceAsBytes(g_index.centroids), &sum);
+    touch(std.mem.sliceAsBytes(g_index.centroid_blocks), &sum);
     touch(std.mem.sliceAsBytes(g_index.bbox_min), &sum);
     touch(std.mem.sliceAsBytes(g_index.bbox_max), &sum);
-    touch(std.mem.sliceAsBytes(g_index.cluster_off), &sum);
-    touch(std.mem.sliceAsBytes(g_index.vectors), &sum);
+    touch(std.mem.sliceAsBytes(g_index.block_off), &sum);
+    touch(std.mem.sliceAsBytes(g_index.vector_blocks), &sum);
     touch(g_index.labels, &sum);
     touch(std.mem.sliceAsBytes(g_index.orig), &sum);
     std.mem.doNotOptimizeAway(sum);

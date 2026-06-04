@@ -5,7 +5,6 @@ const fdpass = @import("fdpass.zig");
 
 const TCP_NODELAY = 1;
 const TCP_QUICKACK = 12;
-const TCP_DEFER_ACCEPT = 9;
 
 pub fn main(init: std.process.Init) !void {
     var it = std.process.Args.Iterator.init(init.minimal.args);
@@ -83,7 +82,6 @@ fn tcpListen(port: u16) !i32 {
     const fd: i32 = @intCast(s);
     const one: u32 = 1;
     _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.REUSEADDR, @ptrCast(&one), 4);
-    _ = linux.setsockopt(fd, linux.IPPROTO.TCP, TCP_DEFER_ACCEPT, @ptrCast(&one), 4);
     var addr = linux.sockaddr.in{ .port = std.mem.nativeToBig(u16, port), .addr = 0 };
     if (linux.errno(linux.bind(fd, @ptrCast(&addr), @sizeOf(linux.sockaddr.in))) != .SUCCESS)
         return error.Bind;

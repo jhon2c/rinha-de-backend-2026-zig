@@ -55,6 +55,8 @@ pub fn main(init: std.process.Init) !void {
     log("parsed {d} reference vectors\n", .{n});
     if (n == 0) return error.NoData;
     if (k > n) k = n;
+    k = (k / vec.BLOCK) * vec.BLOCK;
+    if (k == 0) k = vec.BLOCK;
 
     var prng = std.Random.DefaultPrng.init(SEED);
     const rng = prng.random();
@@ -138,12 +140,17 @@ pub fn main(init: std.process.Init) !void {
     }
     log("clusters: max={d} empty={d} avg={d}\n", .{ max_cluster, empty, n / k });
 
+    log("building pair-SoA blocks ...\n", .{});
+    var soa = try index.buildSoA(gpa, k, centroids, cluster_off, out_vecs, out_lbl, out_orig);
+    defer soa.deinit(gpa);
+    log("n_pad={d} (+{d} sentinel pad lanes)\n", .{ soa.n_pad, soa.n_pad - n });
+
     log("writing {s} ...\n", .{output});
     var file = try std.Io.Dir.cwd().createFile(io, output, .{});
     defer file.close(io);
     var wbuf: [1 << 20]u8 = undefined;
     var fw = file.writer(io, &wbuf);
-    try index.write(&fw.interface, n, k, centroids, bbox_min, bbox_max, cluster_off, out_vecs, out_lbl, out_orig);
+    try index.write(&fw.interface, n, k, soa.n_pad, centroids, soa.centroid_blocks, bbox_min, bbox_max, soa.block_off, soa.vector_blocks, soa.labels, soa.orig);
     try fw.interface.flush();
     log("done.\n", .{});
 }
