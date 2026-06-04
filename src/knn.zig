@@ -53,15 +53,19 @@ inline fn insertSeed(pd: []i64, pc: []u32, nsel: usize, d: i64, ci: u32) void {
     pc[j] = ci;
 }
 
-inline fn selectClusters(idx: *const Index, q: *const Vec, qp: *const [PAIRS]I32x8, nsel: usize, pd: []i64, pc: []u32) void {
+inline fn selectClusters(idx: *const Index, q: *const Vec, qp: *const [PAIRS]I32x8, nsel: usize, pd: []i64, pc: []u32, cdist2: ?[]i32) void {
     for (0..nsel) |i| pd[i] = std.math.maxInt(i64);
     const nblocks = idx.k / vec.BLOCK;
     var b: usize = 0;
     while (b < nblocks) : (b += 1) {
         const d8 = vec.dist8(&idx.centroid_blocks[b], qp);
+        const base = b * vec.BLOCK;
+        if (cdist2) |cd| {
+            const arr: [vec.BLOCK]i32 = d8;
+            for (0..vec.BLOCK) |lane| cd[base + lane] = arr[lane];
+        }
         var mask = vec.candMask(d8, pd[nsel - 1]);
         if (mask == 0) continue;
-        const base = b * vec.BLOCK;
         while (mask != 0) {
             const lane: usize = @ctz(mask);
             mask &= mask - 1;
@@ -76,9 +80,12 @@ pub fn searchExact(idx: *const Index, q: *const Vec, seed: usize) Top5 {
     const nseed = @min(seed, @min(MAX_SEED, idx.k));
     const qp = vec.packQueryPairs(q);
 
+    const have_radius = idx.cluster_radius.len == idx.k;
+    var cdist2: [MAX_K]i32 = undefined;
+
     var pd: [MAX_SEED]i64 = undefined;
     var pc: [MAX_SEED]u32 = undefined;
-    selectClusters(idx, q, &qp, nseed, &pd, &pc);
+    selectClusters(idx, q, &qp, nseed, &pd, &pc, if (have_radius) cdist2[0..idx.k] else null);
 
     var top = Top5{};
     var scanned = std.mem.zeroes([MAX_K / 64]u64);
@@ -92,6 +99,7 @@ pub fn searchExact(idx: *const Index, q: *const Vec, seed: usize) Top5 {
     if ((fc == 0 or fc == vec.K) and top.worst() <= CONFIDENT_DIST) return top;
 
     const have_stats = idx.cluster_frauds.len == idx.k;
+    const sqrt_worst: f64 = if (have_radius) @sqrt(@as(f64, @floatFromInt(top.worst()))) else 0;
     var cand: [REPAIR_CAND_LIMIT]Cand = undefined;
     var ncand: usize = 0;
     var all_legit = true;
@@ -99,6 +107,13 @@ pub fn searchExact(idx: *const Index, q: *const Vec, seed: usize) Top5 {
     for (0..idx.k) |c| {
         if ((scanned[c >> 6] >> @intCast(c & 63)) & 1 != 0) continue;
         if (idx.block_off[c + 1] == idx.block_off[c]) continue;
+        if (have_radius) {
+            const cd = cdist2[c];
+            if (cd >= 0) {
+                const t = sqrt_worst + @as(f64, @floatFromInt(idx.cluster_radius[c]));
+                if (@as(f64, @floatFromInt(cd)) >= t * t) continue;
+            }
+        }
         const lb = bboxLowerBound(q, &idx.bbox_min[c], &idx.bbox_max[c]);
         if (lb >= top.worst()) continue;
         if (have_stats) {
@@ -142,7 +157,7 @@ pub fn search(idx: *const Index, q: *const Vec, nprobe_in: usize) Top5 {
     const qp = vec.packQueryPairs(q);
     var pd: [MAX_NPROBE]i64 = undefined;
     var pc: [MAX_NPROBE]u32 = undefined;
-    selectClusters(idx, q, &qp, nprobe, &pd, &pc);
+    selectClusters(idx, q, &qp, nprobe, &pd, &pc, null);
     var top = Top5{};
     for (0..nprobe) |i| {
         if (pd[i] == std.math.maxInt(i64)) break;

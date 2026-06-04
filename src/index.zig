@@ -86,6 +86,7 @@ pub const Index = struct {
 
     cluster_frauds: []const u32 = &.{},
     cluster_size: []const u32 = &.{},
+    cluster_radius: []const u32 = &.{},
 
     pub fn load(bytes: []align(8) const u8) !Index {
         if (bytes.len < @sizeOf(Header)) return error.IndexTooSmall;
@@ -116,6 +117,7 @@ pub const Index = struct {
     pub fn buildClusterStats(self: *Index, gpa: std.mem.Allocator) !void {
         const frauds = try gpa.alloc(u32, self.k);
         const sizes = try gpa.alloc(u32, self.k);
+        const radius = try gpa.alloc(u32, self.k);
         for (0..self.k) |c| {
             var f: u32 = 0;
             var s: u32 = 0;
@@ -128,9 +130,21 @@ pub const Index = struct {
             }
             frauds[c] = f;
             sizes[c] = s;
+            const cen = self.centroids[c];
+            const mn = self.bbox_min[c];
+            const mx = self.bbox_max[c];
+            var r2: i64 = 0;
+            for (0..vec.LANES) |d| {
+                const a: i64 = @as(i64, cen[d]) - mn[d];
+                const b: i64 = @as(i64, mx[d]) - cen[d];
+                const m = @max(@max(a, -a), @max(b, -b));
+                r2 += m * m;
+            }
+            radius[c] = @intFromFloat(@ceil(@sqrt(@as(f64, @floatFromInt(r2)))));
         }
         self.cluster_frauds = frauds;
         self.cluster_size = sizes;
+        self.cluster_radius = radius;
     }
 };
 
