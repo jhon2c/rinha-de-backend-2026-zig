@@ -91,17 +91,28 @@ pub fn searchExact(idx: *const Index, q: *const Vec, seed: usize) Top5 {
     const fc = top.fraudCount();
     if ((fc == 0 or fc == vec.K) and top.worst() <= CONFIDENT_DIST) return top;
 
+    const have_stats = idx.cluster_frauds.len == idx.k;
     var cand: [REPAIR_CAND_LIMIT]Cand = undefined;
     var ncand: usize = 0;
+    var all_legit = true;
+    var all_fraud = true;
     for (0..idx.k) |c| {
         if ((scanned[c >> 6] >> @intCast(c & 63)) & 1 != 0) continue;
         if (idx.block_off[c + 1] == idx.block_off[c]) continue;
         const lb = bboxLowerBound(q, &idx.bbox_min[c], &idx.bbox_max[c]);
         if (lb >= top.worst()) continue;
+        if (have_stats) {
+            if (idx.cluster_frauds[c] != 0) all_legit = false;
+            if (idx.cluster_frauds[c] != idx.cluster_size[c]) all_fraud = false;
+        }
         if (ncand < REPAIR_CAND_LIMIT) {
             cand[ncand] = .{ .lb = lb, .c = @intCast(c) };
             ncand += 1;
         }
+    }
+    if (have_stats and ncand != 0) {
+        if (fc <= 2 and all_legit) return top;
+        if (fc >= 3 and all_fraud) return top;
     }
     std.sort.pdq(Cand, cand[0..ncand], {}, candLess);
     for (cand[0..ncand]) |cd| {

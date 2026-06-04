@@ -30,7 +30,8 @@ pub fn main(init: std.process.Init) !void {
     const page = std.heap.pageSize();
     const mapped = try std.posix.mmap(null, std.mem.alignForward(usize, size, page), .{ .READ = true }, .{ .TYPE = .PRIVATE }, file.handle, 0);
     file.close(io);
-    const idx = try index.Index.load(mapped);
+    var idx = try index.Index.load(mapped);
+    try idx.buildClusterStats(gpa);
     std.debug.print("index: n={d} k={d}\n", .{ idx.n, idx.k });
 
     const data = try std.Io.Dir.cwd().readFileAlloc(io, data_path, gpa, .limited(1 << 31));

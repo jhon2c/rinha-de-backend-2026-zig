@@ -54,6 +54,7 @@ pub fn main(init: std.process.Init) !void {
     );
     file.close(io);
     g_index = try index.Index.load(mapped);
+    try g_index.buildClusterStats(gpa);
     warmIndex();
     _ = linux.mlockall(.{ .CURRENT = true, .FUTURE = true });
     warmupQueries(io, 900);

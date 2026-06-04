@@ -84,6 +84,9 @@ pub const Index = struct {
     labels: []const u8,
     orig: []const u32,
 
+    cluster_frauds: []const u32 = &.{},
+    cluster_size: []const u32 = &.{},
+
     pub fn load(bytes: []align(8) const u8) !Index {
         if (bytes.len < @sizeOf(Header)) return error.IndexTooSmall;
         const hdr: *const Header = @ptrCast(bytes.ptr);
@@ -108,6 +111,26 @@ pub const Index = struct {
             .labels = sliceOf(u8, bytes, o.labels, n_pad),
             .orig = sliceOf(u32, bytes, o.orig, n_pad),
         };
+    }
+
+    pub fn buildClusterStats(self: *Index, gpa: std.mem.Allocator) !void {
+        const frauds = try gpa.alloc(u32, self.k);
+        const sizes = try gpa.alloc(u32, self.k);
+        for (0..self.k) |c| {
+            var f: u32 = 0;
+            var s: u32 = 0;
+            var i: usize = @as(usize, self.block_off[c]) * vec.BLOCK;
+            const end: usize = @as(usize, self.block_off[c + 1]) * vec.BLOCK;
+            while (i < end) : (i += 1) {
+                if (self.orig[i] == 0xFFFFFFFF) continue;
+                s += 1;
+                f += self.labels[i];
+            }
+            frauds[c] = f;
+            sizes[c] = s;
+        }
+        self.cluster_frauds = frauds;
+        self.cluster_size = sizes;
     }
 };
 
