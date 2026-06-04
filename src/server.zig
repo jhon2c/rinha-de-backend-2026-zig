@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const builtin = @import("builtin");
 const linux = std.os.linux;
@@ -87,6 +86,7 @@ fn ignoreSigpipe() void {
 const CONN_CAP: usize = 512;
 const MAX_FD: usize = 65536;
 const CONN_BUF: usize = 16 * 1024;
+const EPOLL_EVENTS: usize = 1024;
 
 const Conn = struct { buf: [CONN_BUF]u8 = undefined, len: usize = 0, fd: i32 = -1 };
 
@@ -116,7 +116,7 @@ fn runEpoll(gpa: std.mem.Allocator, ctrl_path: [:0]const u8) !void {
     }
     epollAdd(ufd, linux.EPOLL.IN);
 
-    var events: [256]linux.epoll_event = undefined;
+    var events: [EPOLL_EVENTS]linux.epoll_event = undefined;
     const ts = linux.timespec{ .sec = @divTrunc(g_epoll_timeout_us, 1_000_000), .nsec = @mod(g_epoll_timeout_us, 1_000_000) * 1000 };
     while (true) {
         const n_u = linux.syscall6(.epoll_pwait2, @as(usize, @bitCast(@as(isize, g_ep))), @intFromPtr(&events), events.len, @intFromPtr(&ts), 0, 8);
@@ -247,7 +247,6 @@ fn handleClient(fd: i32) void {
         if (rem > 0) std.mem.copyForwards(u8, conn.buf[0..rem], conn.buf[off..conn.len]);
         conn.len = rem;
     } else if (conn.len == conn.buf.len) {
-
         return closeClient(fd);
     }
 }
@@ -374,7 +373,6 @@ fn handleConn(cfd: i32) void {
     var len: usize = 0;
 
     while (true) {
-
         var he = headerEnd(buf[0..len]);
         while (he == null) {
             if (len == buf.len) return;

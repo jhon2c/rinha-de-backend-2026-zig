@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
@@ -8,6 +7,7 @@ const CMSG_LEN_FD: usize = CMSG_DATA_OFF + @sizeOf(i32);
 const CMSG_SPACE: usize = 24;
 
 pub const MAX_PREFIX: usize = 16 * 1024;
+const CTRL_BACKLOG: u32 = 4096;
 
 pub fn sendFd(sock: i32, fd: i32) !void {
     var dummy = [_]u8{'X'};
@@ -39,6 +39,10 @@ pub fn sendFd(sock: i32, fd: i32) !void {
 }
 
 pub fn sendFdWithBytes(sock: i32, fd: i32, bytes: []const u8) !void {
+    return sendFdWithBytesFlags(sock, fd, bytes, 0);
+}
+
+pub fn sendFdWithBytesFlags(sock: i32, fd: i32, bytes: []const u8, flags: u32) !void {
     const payload = bytes[0..@min(bytes.len, MAX_PREFIX)];
     var len: u16 = @intCast(payload.len);
     var iov = [_]posix.iovec_const{
@@ -62,7 +66,7 @@ pub fn sendFdWithBytes(sock: i32, fd: i32, bytes: []const u8) !void {
         .flags = 0,
     };
     while (true) {
-        const r = linux.sendmsg(sock, &msg, 0);
+        const r = linux.sendmsg(sock, &msg, flags);
         switch (linux.errno(r)) {
             .SUCCESS => return,
             .INTR => continue,
@@ -179,6 +183,6 @@ pub fn listenUnixSeqpacket(path: [:0]const u8, nonblock: bool) !i32 {
     _ = linux.unlink(path.ptr);
     if (linux.errno(linux.bind(fd, @ptrCast(&addr), @sizeOf(linux.sockaddr.un))) != .SUCCESS)
         return error.Bind;
-    if (linux.errno(linux.listen(fd, 64)) != .SUCCESS) return error.Listen;
+    if (linux.errno(linux.listen(fd, CTRL_BACKLOG)) != .SUCCESS) return error.Listen;
     return fd;
 }
