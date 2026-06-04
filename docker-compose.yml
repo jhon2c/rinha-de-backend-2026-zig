@@ -1,6 +1,6 @@
 
 x-api: &api
-  image: ghcr.io/jhon2c/rinha-de-backend-2026-zig:76a1380
+  image: ghcr.io/jhon2c/rinha-de-backend-2026-zig:1cf6577
   platform: linux/amd64
   network_mode: "none"
   volumes:
@@ -16,7 +16,7 @@ services:
     cpuset: "0"
     deploy:
       resources:
-        limits: { cpus: "0.49", memory: "165MB" }
+        limits: { cpus: "0.495", memory: "165MB" }
 
   api2:
     <<: *api
@@ -24,10 +24,10 @@ services:
     cpuset: "3"
     deploy:
       resources:
-        limits: { cpus: "0.49", memory: "165MB" }
+        limits: { cpus: "0.495", memory: "165MB" }
 
   lb:
-    image: ghcr.io/jhon2c/rinha-de-backend-2026-zig:76a1380
+    image: ghcr.io/jhon2c/rinha-de-backend-2026-zig:1cf6577
     platform: linux/amd64
     command: ["/lb", "9999", "/run/sock/api1.sock", "/run/sock/api2.sock"]
     cpuset: "1,2"
@@ -40,7 +40,7 @@ services:
     depends_on: [api1, api2]
     deploy:
       resources:
-        limits: { cpus: "0.02", memory: "16MB" }
+        limits: { cpus: "0.01", memory: "16MB" }
 
 volumes:
   socks:
