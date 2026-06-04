@@ -17,6 +17,9 @@ pub const REPAIR_CAND_LIMIT: usize = 2048;
 
 pub const CONFIDENT_DIST: i64 = 1400 * 1400;
 
+const PREFETCH_AHEAD: usize = 2;
+const PREFETCH_OPTS = std.builtin.PrefetchOptions{ .rw = .read, .locality = 1, .cache = .data };
+
 const Cand = struct { lb: i64, c: u32 };
 
 const SENTINEL_ORIG: u32 = 0xFFFFFFFF;
@@ -24,6 +27,7 @@ const SENTINEL_ORIG: u32 = 0xFFFFFFFF;
 inline fn scanBlocks(idx: *const Index, q: *const Vec, qp: *const [PAIRS]I32x8, bstart: u32, bend: u32, top: *Top5) void {
     var b: usize = bstart;
     while (b < bend) : (b += 1) {
+        if (b + PREFETCH_AHEAD < bend) @prefetch(&idx.vector_blocks[b + PREFETCH_AHEAD], PREFETCH_OPTS);
         const d8 = vec.dist8(&idx.vector_blocks[b], qp);
         var mask = vec.candMask(d8, top.dist[vec.K - 1]);
         if (mask == 0) continue;
@@ -58,6 +62,7 @@ inline fn selectClusters(idx: *const Index, q: *const Vec, qp: *const [PAIRS]I32
     const nblocks = idx.k / vec.BLOCK;
     var b: usize = 0;
     while (b < nblocks) : (b += 1) {
+        if (b + PREFETCH_AHEAD < nblocks) @prefetch(&idx.centroid_blocks[b + PREFETCH_AHEAD], PREFETCH_OPTS);
         const d8 = vec.dist8(&idx.centroid_blocks[b], qp);
         const base = b * vec.BLOCK;
         if (cdist2) |cd| {
