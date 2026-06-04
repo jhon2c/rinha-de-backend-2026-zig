@@ -1,6 +1,6 @@
 
 x-api: &api
-  image: ghcr.io/jhon2c/rinha-de-backend-2026-zig:7fec2e7
+  image: ghcr.io/jhon2c/rinha-de-backend-2026-zig:76a1380
   platform: linux/amd64
   volumes:
     - socks:/run/sock
@@ -26,7 +26,7 @@ services:
         limits: { cpus: "0.475", memory: "145MB" }
 
   lb:
-    image: ghcr.io/jhon2c/rinha-de-backend-2026-zig:7fec2e7
+    image: ghcr.io/jhon2c/rinha-de-backend-2026-zig:76a1380
     platform: linux/amd64
     command: ["/lb", "9999", "/run/sock/api1.sock", "/run/sock/api2.sock"]
     cpuset: "2,3"
