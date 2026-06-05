@@ -86,32 +86,38 @@ pub fn main(init: std.process.Init) !void {
     const sorted = try gpa.alloc(u64, N);
     defer gpa.free(sorted);
 
-    std.debug.print("\nsearchExact (adaptive bbox branch-and-bound), seed sweep:\n{s:>7} {s:>6} {s:>6} {s:>6} {s:>10} {s:>9} {s:>9} {s:>9} {s:>9}\n", .{ "seed", "FP", "FN", "mism", "det_score", "mean_us", "p50_us", "p99_us", "max_us" });
-    for ([_]usize{ 2, 4, 8, 12, 16 }) |seed| {
-        var fp: usize = 0;
-        var fn_: usize = 0;
-        var total_ns: u64 = 0;
-        for (entries.items, 0..) |*e, i| {
-            const t0 = std.Io.Clock.now(.awake, io);
-            const top = knn.searchExact(&idx, &e.q, seed);
-            const t1 = std.Io.Clock.now(.awake, io);
-            const ns: u64 = @intCast(t1.nanoseconds - t0.nanoseconds);
-            std.mem.doNotOptimizeAway(top.dist[0]);
-            lat[i] = ns;
-            total_ns += ns;
-            const approved = knn.decide(&top).approved;
-            if (approved != e.expected_approved) {
-                if (approved) fn_ += 1 else fp += 1;
+    std.debug.print("\nsearchExact (adaptive bbox branch-and-bound), seed x repair-block-budget sweep:\n{s:>7} {s:>9} {s:>6} {s:>6} {s:>6} {s:>10} {s:>9} {s:>9} {s:>9} {s:>9}\n", .{ "seed", "budget", "FP", "FN", "mism", "det_score", "mean_us", "p50_us", "p99_us", "max_us" });
+    const budgets = [_]usize{ std.math.maxInt(usize), 8192, 4096, 2048, 1024, 512 };
+    for ([_]usize{ 2, 4, 8 }) |seed| {
+        for (budgets) |budget| {
+            knn.repair_block_budget = budget;
+            var fp: usize = 0;
+            var fn_: usize = 0;
+            var total_ns: u64 = 0;
+            for (entries.items, 0..) |*e, i| {
+                const t0 = std.Io.Clock.now(.awake, io);
+                const top = knn.searchExact(&idx, &e.q, seed);
+                const t1 = std.Io.Clock.now(.awake, io);
+                const ns: u64 = @intCast(t1.nanoseconds - t0.nanoseconds);
+                std.mem.doNotOptimizeAway(top.dist[0]);
+                lat[i] = ns;
+                total_ns += ns;
+                const approved = knn.decide(&top).approved;
+                if (approved != e.expected_approved) {
+                    if (approved) fn_ += 1 else fp += 1;
+                }
             }
+            @memcpy(sorted, lat);
+            std.mem.sort(u64, sorted, {}, std.sort.asc(u64));
+            const mean_us = @as(f64, @floatFromInt(total_ns)) / @as(f64, @floatFromInt(N)) / 1000.0;
+            const p50_us = @as(f64, @floatFromInt(sorted[N / 2])) / 1000.0;
+            const p99_us = @as(f64, @floatFromInt(sorted[(N * 99) / 100])) / 1000.0;
+            const max_us = @as(f64, @floatFromInt(sorted[N - 1])) / 1000.0;
+            const blab: u64 = if (budget == std.math.maxInt(usize)) 0 else budget;
+            std.debug.print("{d:>7} {d:>9} {d:>6} {d:>6} {d:>6} {d:>10.1} {d:>9.2} {d:>9.2} {d:>9.2} {d:>9.2}\n", .{ seed, blab, fp, fn_, fp + fn_, detectionScore(fp, fn_, 0, N), mean_us, p50_us, p99_us, max_us });
         }
-        @memcpy(sorted, lat);
-        std.mem.sort(u64, sorted, {}, std.sort.asc(u64));
-        const mean_us = @as(f64, @floatFromInt(total_ns)) / @as(f64, @floatFromInt(N)) / 1000.0;
-        const p50_us = @as(f64, @floatFromInt(sorted[N / 2])) / 1000.0;
-        const p99_us = @as(f64, @floatFromInt(sorted[(N * 99) / 100])) / 1000.0;
-        const max_us = @as(f64, @floatFromInt(sorted[N - 1])) / 1000.0;
-        std.debug.print("{d:>7} {d:>6} {d:>6} {d:>6} {d:>10.1} {d:>9.2} {d:>9.2} {d:>9.2} {d:>9.2}\n", .{ seed, fp, fn_, fp + fn_, detectionScore(fp, fn_, 0, N), mean_us, p50_us, p99_us, max_us });
     }
+    knn.repair_block_budget = std.math.maxInt(usize);
 }
 
 fn detectionScore(fp: usize, fn_: usize, errs: usize, n: usize) f64 {

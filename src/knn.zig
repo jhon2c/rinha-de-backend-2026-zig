@@ -17,6 +17,9 @@ pub const REPAIR_CAND_LIMIT: usize = 2048;
 
 pub const CONFIDENT_DIST: i64 = 1400 * 1400;
 
+pub const DEFAULT_REPAIR_BLOCK_BUDGET: usize = 4096;
+pub var repair_block_budget: usize = DEFAULT_REPAIR_BLOCK_BUDGET;
+
 const PREFETCH_AHEAD: usize = 2;
 const PREFETCH_OPTS = std.builtin.PrefetchOptions{ .rw = .read, .locality = 1, .cache = .data };
 
@@ -135,9 +138,15 @@ pub fn searchExact(idx: *const Index, q: *const Vec, seed: usize) Top5 {
         if (fc >= 3 and all_fraud) return top;
     }
     std.sort.pdq(Cand, cand[0..ncand], {}, candLess);
+    var budget: usize = repair_block_budget;
     for (cand[0..ncand]) |cd| {
         if (cd.lb >= top.worst()) break;
-        scanBlocks(idx, q, &qp, idx.block_off[cd.c], idx.block_off[cd.c + 1], &top);
+        const c0 = idx.block_off[cd.c];
+        const c1 = idx.block_off[cd.c + 1];
+        scanBlocks(idx, q, &qp, c0, c1, &top);
+        const nb: usize = c1 - c0;
+        if (nb >= budget) break;
+        budget -= nb;
     }
     return top;
 }
